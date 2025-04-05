@@ -87,17 +87,21 @@ class TD3(object):
         self.actor = Actor(state_dim, action_dim, max_action).to(device)
         self.actor_target = Actor(state_dim, action_dim, max_action).to(device)
         self.actor_target.load_state_dict(self.actor.state_dict())
-        self.actor_optimizer = optim.Adam(self.actor.parameters())
+        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=0.001)
         self.critic = Critic(state_dim, action_dim).to(device)
         self.critic_target = Critic(state_dim, action_dim).to(device)
         self.critic_target.load_state_dict(self.critic.state_dict())
-        self.critic_optimizer = optim.Adam(self.critic.parameters())
+        self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=0.001)
         self.max_action = max_action
         self.reward_window = []
         self.memory = ReplayBuffer(100000)
         self.last_state = torch.Tensor(state_dim).unsqueeze(0)
         self.last_action = np.zeros(action_dim)
         self.last_reward = 0
+        self.momentum = 0.0
+        self.last_position = None
+        self.stuck_counter = 0
+        self.min_velocity = 0.1
 
     def select_action(self, state):
         state = torch.Tensor(state.reshape(1, -1)).to(device)
@@ -155,16 +159,42 @@ class TD3(object):
 
     def update(self, reward, new_signal):
         new_state = torch.Tensor(new_signal).float().unsqueeze(0)
-        self.memory.add((self.last_state.numpy().flatten(), new_state.numpy().flatten(), self.last_action, reward, False))
+        
+        # Extract position from new_signal (assuming last two elements are coordinates)
+        current_position = np.array(new_signal[-2:])
+        
+        # Check if car is stuck
+        if self.last_position is not None:
+            distance_moved = np.linalg.norm(current_position - self.last_position)
+            if distance_moved < self.min_velocity:
+                self.stuck_counter += 1
+                # Apply increasing penalty for being stuck
+                reward -= 0.5 * self.stuck_counter
+            else:
+                self.stuck_counter = 0
+                # Add momentum bonus for continuous movement
+                self.momentum = min(1.0, self.momentum + 0.1)
+                reward += 0.2 * self.momentum
+        
+        self.last_position = current_position
+        
+        # Add exploration noise to action
         action = self.select_action(new_state)
+        noise = np.random.normal(0, 0.1, size=action.shape)
+        action = np.clip(action + noise, -self.max_action, self.max_action)
+        
+        self.memory.add((self.last_state.numpy().flatten(), new_state.numpy().flatten(), self.last_action, reward, False))
+        
         if len(self.memory.storage) > 500:
             self.train(self.memory, 1, batch_size=500)
+        
         self.last_action = action
         self.last_state = new_state
         self.last_reward = reward
         self.reward_window.append(reward)
         if len(self.reward_window) > 1000:
             del self.reward_window[0]
+        
         return action
 
     def score(self):

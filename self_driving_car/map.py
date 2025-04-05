@@ -52,7 +52,7 @@ length = 0
 
 # Initialize TD3 with continuous action space
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model = TD3(state_dim=5, action_dim=1, max_action=5.0)  # Single continuous action for rotation
+model = TD3(state_dim=7, action_dim=1, max_action=5.0)  # Single continuous action for rotation
 
 last_reward = 0
 
@@ -278,11 +278,12 @@ class Game(Widget):
         self.car.x = car_x
         self.car.y = car_y
 
-        # Calculate state inputs
+        # Calculate state inputs with enhanced position awareness
         xx = goal_x - car_x
         yy = goal_y - car_y
         orientation = Vector(*self.car.velocity).angle((xx,yy))/180.
-        last_signal = [self.car.signal1, self.car.signal2, self.car.signal3, orientation, -orientation]
+        velocity_magnitude = np.sqrt(self.car.velocity[0]**2 + self.car.velocity[1]**2)
+        last_signal = [self.car.signal1, self.car.signal2, self.car.signal3, orientation, -orientation, car_x/longueur, car_y/largeur]
         
         # Get continuous action from TD3
         action = model.update(last_reward, last_signal)
@@ -296,16 +297,17 @@ class Game(Widget):
         self.ball2.pos = self.car.sensor2
         self.ball3.pos = self.car.sensor3
 
-        # Reward shaping for continuous control
+        # Enhanced reward shaping for continuous control and anti-stuck mechanism
         if 0 <= car_x < longueur and 0 <= car_y < largeur and sand[car_x, car_y] > 0:
-            self.car.velocity = Vector(0.5, 0).rotate(self.car.angle)
+            self.car.velocity = Vector(1.0, 0).rotate(self.car.angle)  # Increased base speed in sand
             print(1, goal_x, goal_y, distance, car_x, car_y, im.read_pixel(car_x, car_y))
-            last_reward = -2.0  # Stronger penalty for hitting sand
+            last_reward = -1.5  # Reduced penalty to encourage exploration
         else:
-            self.car.velocity = Vector(2, 0).rotate(self.car.angle)
-            # Continuous reward based on distance improvement
+            self.car.velocity = Vector(3, 0).rotate(self.car.angle)  # Increased base speed
+            # Enhanced continuous reward based on distance improvement and velocity
             distance_improvement = last_distance - distance
-            last_reward = distance_improvement * 0.5  # Scale the reward
+            velocity_reward = min(velocity_magnitude / 3.0, 1.0)  # Reward for maintaining speed
+            last_reward = distance_improvement * 0.8 + velocity_reward * 0.4  # Balanced reward
             
             print(0, goal_x, goal_y, distance, car_x, car_y, im.read_pixel(car_x, car_y))
             
